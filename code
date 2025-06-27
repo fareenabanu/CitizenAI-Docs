@@ -1,0 +1,90 @@
+!pip install gradio transformers textblob
+import gradio as gr
+import pandas as pd
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+from textblob import TextBlob
+import matplotlib.pyplot as plt
+import os
+
+# --- Load IBM Granite model ---
+def load_ibm_granite():
+    model_name = "ibm-granite/granite-3.3-2b-instruct"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name)
+    return pipeline("text-generation", model=model, tokenizer=tokenizer), tokenizer
+
+gpt2, tokenizer = load_ibm_granite()
+
+# --- File to store feedback ---
+FEEDBACK_FILE = "citizen_feedback.csv"
+if not os.path.exists(FEEDBACK_FILE):
+    pd.DataFrame(columns=["feedback", "sentiment"]).to_csv(FEEDBACK_FILE, index=False)
+
+# --- Chat Assistant Function ---
+def chat_with_ai(question):
+    if not question.strip():
+        return "Please enter a question."
+    response = gpt2(
+        question,
+        max_new_tokens=200,
+        truncation=True,
+        do_sample=True,
+        pad_token_id=tokenizer.eos_token_id
+    )[0]['generated_text']
+    return response
+
+# --- Feedback Function ---
+def analyze_and_store_feedback(feedback_text):
+    sentiment_score = TextBlob(feedback_text).sentiment.polarity
+    if sentiment_score > 0.1:
+        sentiment = "Positive"
+    elif sentiment_score < -0.1:
+        sentiment = "Negative"
+    else:
+        sentiment = "Neutral"
+
+    df = pd.read_csv(FEEDBACK_FILE)
+    new_row = pd.DataFrame([{"feedback": feedback_text, "sentiment": sentiment}])
+    df = pd.concat([df, new_row], ignore_index=True)
+    df.to_csv(FEEDBACK_FILE, index=False)
+    return f"Sentiment: {sentiment}. Feedback saved."
+
+# --- Dashboard Function ---
+def show_dashboard():
+    df = pd.read_csv(FEEDBACK_FILE)
+    if df.empty:
+        return None, "No feedback submitted yet."
+
+    sentiment_counts = df['sentiment'].value_counts()
+    fig, ax = plt.subplots()
+    ax.pie(sentiment_counts, labels=sentiment_counts.index, autopct='%1.1f%%', startangle=90)
+    ax.axis('equal')
+    return fig, df[::-1].reset_index(drop=True)
+
+# --- Gradio Interfaces ---
+chat_interface = gr.Interface(
+    fn=chat_with_ai,
+    inputs=gr.Textbox(label="Ask your question to the government"),
+    outputs=gr.Textbox(label="AI Response"),
+    title="💬 AI Chat Assistant"
+)
+
+feedback_interface = gr.Interface(
+    fn=analyze_and_store_feedback,
+    inputs=gr.Textbox(label="Enter your feedback about any government service", lines=4),
+    outputs=gr.Textbox(label="Sentiment Analysis Result"),
+    title="📝 Submit Feedback"
+)
+
+dashboard_interface = gr.Interface(
+    fn=show_dashboard,
+    inputs=[],
+    outputs=[gr.Plot(label="Sentiment Distribution"), gr.Dataframe(label="All Feedback")],
+    title="📊 Citizen Sentiment Dashboard"
+)
+
+# --- Tabbed Layout ---
+gr.TabbedInterface(
+    [chat_interface, feedback_interface, dashboard_interface],
+    ["Chat Assistant", "Submit Feedback", "View Dashboard"]
+).launch()
